@@ -1,8 +1,5 @@
 (ns frontend.extensions.srs
-  (:require [cljs-time.coerce :as tc]
-            [cljs-time.core :as t]
-            [cljs-time.local :as tl]
-            [clojure.string :as string]
+  (:require [clojure.string :as string]
             [frontend.commands :as commands]
             [frontend.components.block :as component-block]
             [frontend.components.editor :as editor]
@@ -17,7 +14,6 @@
             [frontend.db.query-dsl :as query-dsl]
             [frontend.db.query-react :as query-react]
             [frontend.handler.editor :as editor-handler]
-            [frontend.handler.editor.property :as editor-property]
             [frontend.modules.shortcut.core :as shortcut]
             [frontend.state :as state]
             [frontend.template :as template]
@@ -31,7 +27,7 @@
             [logseq.graph-parser.util.page-ref :as page-ref]
             [medley.core :as medley]
             [open-spaced-repetition.cljc-fsrs.core :as fsrs]
-            [tick.core :as tick]
+            [tick.core :as t]
             [rum.core :as rum]))
 
 ;;; ================================================================
@@ -59,7 +55,7 @@
 (def card-last-review-property          :last-repeat)
 
 (def default-card-properties-map
-  {card-due-property (tick/now)
+  {card-due-property (t/now)
    card-stability-property 0
    card-difficulty-property 0
    card-elapsed-days-property 0
@@ -67,7 +63,7 @@
    card-reps-property 0
    card-lapses-property 0
    card-state-property :new
-   card-last-review-property (tick/now)})
+   card-last-review-property (t/now)})
 
 (def cloze-macro-name
   "cloze syntax: {{cloze: ...}}"
@@ -304,13 +300,15 @@
   (let [filtered-result (filterv (fn [b]
                                    (let [props (:block/properties b)
                                          next-sched (get props card-due-property)
-                                         next-sched* (tc/from-string next-sched)
+                                         next-sched* (try (t/zoned-date-time next-sched)
+                                                          (catch js/Error _
+                                                            nil))
                                          repeats (get props card-reps-property)]
                                      (or (nil? repeats)
                                          (< repeats 1)
                                          (nil? next-sched)
                                          (nil? next-sched*)
-                                         (t/before? next-sched* time))))
+                                         (< next-sched* time))))
                                  blocks),
         sort-by-next-schedule   (sort-by (fn [b]
                                            (get (get b :block/properties) card-due-property)) filtered-result)]
@@ -356,15 +354,19 @@
          (satisfies? ICard card)]}
   (let [block (.-block card)
         props (get-block-card-properties block)
-        fsrs-card {:due (get props card-due-property)
+        fsrs-card {:due (t/zoned-date-time (get props card-due-property))
                    :stability (get props card-stability-property)
                    :difficulty (get props card-difficulty-property)
                    :elapsed-days (get props card-elapsed-days-property)
                    :scheduled-days (get props card-scheduled-days-property)
                    :reps (get props card-reps-property)
                    :lapses (get props card-lapses-property)
-                   :state (get props card-state-property)
-                   :last-repeat (get props card-last-review-property)}
+                   :state (case (get props card-state-property)
+                            ":new" :new 
+                            ":learning" :learning
+                            ":review" :review
+                            ":relearning" :relearning)
+                   :last-repeat (t/zoned-date-time (get props card-last-review-property))}
         rating (case score
                  1 :again
                  3 :hard
@@ -508,9 +510,7 @@
                                    :id         "card-forgotten"
                                    :background "red"
                                    :on-click   (fn []
-                                                 (score-and-next-card 1 card card-index finished? phase review-records cb)
-                                                 (let [tomorrow (tc/to-string (t/plus (t/today) (t/days 1)))]
-                                                   (editor-property/set-block-property! root-block-id card-due-property tomorrow)))})
+                                                 (score-and-next-card 1 card card-index finished? phase review-records cb))})
 
                (btn-with-shortcut {:btn-text (if (util/mobile?) "Hard" (t :flashcards/modal-btn-recall))
                                    :shortcut "t"
@@ -602,7 +602,7 @@
           query-string ""
           blocks (query repo query-string {:use-cache?        false})]
       (when (seq blocks)
-        (let [{:keys [result]} (query-scheduled blocks (tl/local-now))
+        (let [{:keys [result]} (query-scheduled blocks (t/now))
               count (count result)]
           (reset! cards-total count)
           count)))
@@ -763,7 +763,7 @@
                          (:query-string options)
                          (string/join ", " (:arguments options)))
         query-result (query repo query-string)
-        due-result (query-scheduled query-result (tl/local-now))]
+        due-result (query-scheduled query-result (t/now))]
     (cards-inner config (assoc options :cards? true)
                  {:query-atom *query
                   :query-string query-string
