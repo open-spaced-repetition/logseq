@@ -32,7 +32,10 @@
   logseq/graph-parser                   {:local/root "deps/graph-parser"}
   logseq/publishing                     {:local/root "deps/publishing"}
   logseq/shui                           {:local/root "deps/shui"}
-  metosin/malli                         {:mvn/version "0.10.0"}}
+  metosin/malli                         {:mvn/version "0.10.0"}
+  io.github.open-spaced-repetition/cljc-fsrs 
+  {:git/url "https://github.com/open-spaced-repetition/cljc-fsrs.git"
+   :sha "35126e0d0a1b2cc18bd489b7aac50c54da0bb185"}}
 
  :aliases {:cljs {:extra-paths ["src/dev-cljs/" "src/test/" "src/electron/"]
                   :extra-deps  {org.clojure/clojurescript        {:mvn/version "1.11.54"}

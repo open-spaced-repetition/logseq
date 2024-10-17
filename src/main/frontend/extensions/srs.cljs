@@ -30,6 +30,8 @@
             [logseq.graph-parser.property :as gp-property]
             [logseq.graph-parser.util.page-ref :as page-ref]
             [medley.core :as medley]
+            [open-spaced-repetition.cljc-fsrs.core :as fsrs]
+            [tick.core :as tick]
             [rum.core :as rum]))
 
 ;;; ================================================================
@@ -46,16 +48,26 @@
 
 (def card-hash-tag "card")
 
-(def card-last-interval-property        :card-last-interval)
-(def card-repeats-property              :card-repeats)
-(def card-last-reviewed-property        :card-last-reviewed)
-(def card-next-schedule-property        :card-next-schedule)
-(def card-last-easiness-factor-property :card-ease-factor)
-(def card-last-score-property           :card-last-score)
+(def card-due-property                  :due)
+(def card-stability-property            :stability)
+(def card-difficulty-property           :difficulty)
+(def card-elapsed-days-property         :elapsed-days)
+(def card-scheduled-days-property       :scheduled-days)
+(def card-reps-property                 :reps)
+(def card-lapses-property               :lapses)
+(def card-state-property                :state)
+(def card-last-review-property          :last-repeat)
 
-(def default-card-properties-map {card-last-interval-property -1
-                                  card-repeats-property 0
-                                  card-last-easiness-factor-property 2.5})
+(def default-card-properties-map
+  {card-due-property (tick/now)
+   card-stability-property 0
+   card-difficulty-property 0
+   card-elapsed-days-property 0
+   card-scheduled-days-property 0
+   card-reps-property 0
+   card-lapses-property 0
+   card-state-property :new
+   card-last-review-property (tick/now)})
 
 (def cloze-macro-name
   "cloze syntax: {{cloze: ...}}"
@@ -98,12 +110,15 @@
   (when-let [properties (:block/properties block)]
     (merge
      default-card-properties-map
-     (select-keys properties  [card-last-interval-property
-                               card-repeats-property
-                               card-last-reviewed-property
-                               card-next-schedule-property
-                               card-last-easiness-factor-property
-                               card-last-score-property]))))
+     (select-keys properties  [card-due-property
+                               card-stability-property
+                               card-difficulty-property
+                               card-elapsed-days-property
+                               card-scheduled-days-property
+                               card-reps-property
+                               card-lapses-property
+                               card-state-property
+                               card-last-review-property]))))
 
 (defn- save-block-card-properties!
   [block props]
@@ -114,12 +129,7 @@
 
 (defn- reset-block-card-properties!
   [block]
-  (save-block-card-properties! block {card-last-interval-property -1
-                                      card-repeats-property 0
-                                      card-last-easiness-factor-property 2.5
-                                      card-last-reviewed-property "nil"
-                                      card-next-schedule-property "nil"
-                                      card-last-score-property "nil"}))
+  (save-block-card-properties! block default-card-properties-map))
 
 
 ;;; used by other ns
@@ -293,9 +303,9 @@
   [blocks time]
   (let [filtered-result (filterv (fn [b]
                                    (let [props (:block/properties b)
-                                         next-sched (get props card-next-schedule-property)
+                                         next-sched (get props card-due-property)
                                          next-sched* (tc/from-string next-sched)
-                                         repeats (get props card-repeats-property)]
+                                         repeats (get props card-reps-property)]
                                      (or (nil? repeats)
                                          (< repeats 1)
                                          (nil? next-sched)
@@ -303,7 +313,7 @@
                                          (t/before? next-sched* time))))
                                  blocks),
         sort-by-next-schedule   (sort-by (fn [b]
-                                           (get (get b :block/properties) card-next-schedule-property)) filtered-result)]
+                                           (get (get b :block/properties) card-due-property)) filtered-result)]
     {:total (count blocks)
      :result sort-by-next-schedule}))
 
@@ -312,50 +322,64 @@
 ;;; operations
 
 
-(defn- get-next-interval
-  [card score]
-  {:pre [(and (<= score 5) (>= score 0))
-         (satisfies? ICard card)]}
-  (let [block (.-block card)
-        props (get-block-card-properties block)
-        last-interval (or
-                       (when-let [v (get props card-last-interval-property)]
-                         (util/safe-parse-float v))
-                       0)
-        repeats (or (when-let [v (get props card-repeats-property)]
-                      (util/safe-parse-int v))
-                    0)
-        last-ef (or (when-let [v (get props card-last-easiness-factor-property)]
-                      (util/safe-parse-float v)) 2.5)
-        [next-interval next-repeats next-ef of-matrix*]
-        (next-interval last-interval repeats last-ef score @of-matrix)
-        next-interval* (if (< next-interval 0) 0 next-interval)
-        next-schedule (tc/to-string (t/plus (tl/local-now) (t/hours (* 24 next-interval*))))
-        now (tc/to-string (tl/local-now))]
-    {:next-of-matrix of-matrix*
-     card-last-interval-property next-interval
-     card-repeats-property next-repeats
-     card-last-easiness-factor-property next-ef
-     card-next-schedule-property next-schedule
-     card-last-reviewed-property now
-     card-last-score-property score}))
+;; (defn- get-next-interval
+;;   [card score]
+;;   {:pre [(and (<= score 5) (>= score 0))
+;;          (satisfies? ICard card)]}
+;;   (let [block (.-block card)
+;;         props (get-block-card-properties block)
+;;         last-interval (or
+;;                        (when-let [v (get props card-last-interval-property)]
+;;                          (util/safe-parse-float v))
+;;                        0)
+;;         repeats (or (when-let [v (get props card-repeats-property)]
+;;                       (util/safe-parse-int v))
+;;                     0)
+;;         last-ef (or (when-let [v (get props card-last-easiness-factor-property)]
+;;                       (util/safe-parse-float v)) 2.5)
+;;         [next-interval next-repeats next-ef of-matrix*]
+;;         (next-interval last-interval repeats last-ef score @of-matrix)
+;;         next-interval* (if (< next-interval 0) 0 next-interval)
+;;         next-schedule (tc/to-string (t/plus (tl/local-now) (t/hours (* 24 next-interval*))))
+;;         now (tc/to-string (tl/local-now))]
+;;     {:next-of-matrix of-matrix*
+;;      card-last-interval-property next-interval
+;;      card-repeats-property next-repeats
+;;      card-last-easiness-factor-property next-ef
+;;      card-next-schedule-property next-schedule
+;;      card-last-reviewed-property now
+;;      card-last-score-property score}))
 
 (defn- operation-score!
   [card score]
   {:pre [(and (<= score 5) (>= score 0))
          (satisfies? ICard card)]}
   (let [block (.-block card)
-        result (get-next-interval card score)
-        next-of-matrix (:next-of-matrix result)]
-    (reset! of-matrix next-of-matrix)
+        props (get-block-card-properties block)
+        fsrs-card {:due (get props card-due-property)
+                   :stability (get props card-stability-property)
+                   :difficulty (get props card-difficulty-property)
+                   :elapsed-days (get props card-elapsed-days-property)
+                   :scheduled-days (get props card-scheduled-days-property)
+                   :reps (get props card-reps-property)
+                   :lapses (get props card-lapses-property)
+                   :state (get props card-state-property)
+                   :last-repeat (get props card-last-review-property)}
+        rating (case score
+                 1 :again
+                 3 :hard
+                 5 :good)
+        result (fsrs/repeat-card! fsrs-card rating)]
     (save-block-card-properties! (db/pull (:db/id block))
                                  (select-keys result
-                                              [card-last-interval-property
-                                               card-repeats-property
-                                               card-last-easiness-factor-property
-                                               card-next-schedule-property
-                                               card-last-reviewed-property
-                                               card-last-score-property]))))
+                                              [card-due-property
+                                               card-reps-property
+                                               card-stability-property
+                                               card-difficulty-property
+                                               card-elapsed-days-property
+                                               card-scheduled-days-property
+                                               card-state-property
+                                               card-last-review-property]))))
 
 (defn- operation-reset!
   [card]
@@ -486,7 +510,7 @@
                                    :on-click   (fn []
                                                  (score-and-next-card 1 card card-index finished? phase review-records cb)
                                                  (let [tomorrow (tc/to-string (t/plus (t/today) (t/days 1)))]
-                                                   (editor-property/set-block-property! root-block-id card-next-schedule-property tomorrow)))})
+                                                   (editor-property/set-block-property! root-block-id card-due-property tomorrow)))})
 
                (btn-with-shortcut {:btn-text (if (util/mobile?) "Hard" (t :flashcards/modal-btn-recall))
                                    :shortcut "t"
@@ -760,13 +784,15 @@
 (component-macro/register query-macro-name cards)
 
 ;;; register builtin properties
-(gp-property/register-built-in-properties #{card-last-interval-property
-                                            card-repeats-property
-                                            card-last-reviewed-property
-                                            card-next-schedule-property
-                                            card-last-easiness-factor-property
-                                            card-last-score-property})
-
+(gp-property/register-built-in-properties #{card-due-property
+                                            card-stability-property
+                                            card-difficulty-property
+                                            card-elapsed-days-property
+                                            card-scheduled-days-property
+                                            card-reps-property
+                                            card-lapses-property
+                                            card-state-property
+                                            card-last-review-property})
 ;;; register slash commands
 (commands/register-slash-command ["Cards"
                                   [[:editor/input "{{cards }}" {:backward-pos 2}]]
